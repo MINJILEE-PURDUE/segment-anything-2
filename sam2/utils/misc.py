@@ -58,9 +58,35 @@ def get_connected_components(mask):
     - counts: A tensor of shape (N, 1, H, W) containing the area of the connected
               components for foreground pixels and 0 for background pixels.
     """
-    from sam2 import _C
 
-    return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    if torch.cuda.is_available():
+        from sam2 import _C
+
+        return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+
+
+    # if cuda is not available use scipy to get connected components
+    from scipy.ndimage import label as scipy_label
+    
+    labels = torch.zeros_like(mask, dtype=torch.int32)
+    counts = torch.zeros_like(mask, dtype=torch.int32)
+
+    mask_np = mask.cpu().numpy()  
+    for i in range(mask.shape[0]):
+        mask_i = mask_np[i, 0]
+        labeled_array, num_features = scipy_label(mask_i, structure=np.ones((3, 3)))
+        labels_np = np.zeros_like(labeled_array)
+        counts_np = np.zeros_like(labeled_array)
+
+        for feature in range(1, num_features + 1):
+            labels_np[labeled_array == feature] = feature
+            counts_np[labeled_array == feature] = (labeled_array == feature).sum()
+        
+        labels[i, 0] = torch.tensor(labels_np, dtype=torch.int32)
+        counts[i, 0] = torch.tensor(counts_np, dtype=torch.int32)
+    labels = labels.to(mask.device)
+    counts = counts.to(mask.device)
+    return labels, counts 
 
 
 def mask_to_box(masks: torch.Tensor):
@@ -164,6 +190,7 @@ def load_video_frames(
     video_path,
     image_size,
     offload_video_to_cpu,
+    device,
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
@@ -204,9 +231,9 @@ def load_video_frames(
     for n, img_path in enumerate(tqdm(img_paths, desc="frame loading (JPEG)")):
         images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
     if not offload_video_to_cpu:
-        images = images.cuda()
-        img_mean = img_mean.cuda()
-        img_std = img_std.cuda()
+        images = images.to(device)
+        img_mean = img_mean.to(device)
+        img_std = img_std.to(device)
     # normalize by mean and std
     images -= img_mean
     images /= img_std
